@@ -34,6 +34,7 @@ if (!fs.existsSync(uploadsDir)) {
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    console.log('MULTER DESTINATION:', uploadsDir); // Log the absolute path
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
@@ -1066,7 +1067,7 @@ app.post('/api/stripe/confirm-payment', authenticateToken, async (req, res) => {
         billing_city, billing_state, billing_postal_code, billing_country,
         created_at
        )
-       VALUES ($1, $2, $3, $4, $5, 'processing', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW()) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, 'processing', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW()) RETURNING *`,
       [
         userId,
         orderTotal,

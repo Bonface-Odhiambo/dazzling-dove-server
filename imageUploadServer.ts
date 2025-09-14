@@ -1,13 +1,10 @@
-// Simple Node.js server to handle image uploads
-// This would typically be a separate backend service
-
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 
 const app = express();
-const PORT = 3001;
+const PORT = 5174;
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -46,6 +43,8 @@ const upload = multer({
     }
   }
 });
+
+
 
 // Enable CORS
 app.use((req, res, next) => {
