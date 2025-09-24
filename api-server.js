@@ -1464,6 +1464,401 @@ app.put('/api/admin/users/:userId/role', authenticateToken, async (req, res) => 
 });
 
 // =============================================
+// BANNERS/CAROUSEL ROUTES
+// =============================================
+
+// Get all active banners for public display (homepage carousel)
+app.get('/api/banners', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id,
+        title,
+        subtitle,
+        description,
+        image_url,
+        button_text,
+        button_link,
+        background_color,
+        text_color,
+        display_order
+      FROM banners 
+      WHERE is_active = true 
+      ORDER BY display_order ASC, created_at DESC
+    `);
+
+    res.json({
+      data: result.rows,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching banners:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch banners' });
+  }
+});
+
+// =============================================
+// ADMIN BANNERS ROUTES
+// =============================================
+
+// Get all banners for admin management
+app.get('/api/admin/banners', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { status, limit = 50, offset = 0 } = req.query;
+
+    let whereClause = '';
+    let queryParams = [];
+    let paramIndex = 1;
+
+    // Filter by status if specified
+    if (status && status !== 'all') {
+      const isActive = status === 'active';
+      whereClause = 'WHERE is_active = $1';
+      queryParams.push(isActive);
+      paramIndex++;
+    }
+
+    // Add limit and offset
+    queryParams.push(parseInt(limit));
+    queryParams.push(parseInt(offset));
+
+    const result = await pool.query(`
+      SELECT 
+        b.*,
+        u.first_name as created_by_name
+      FROM banners b
+      LEFT JOIN users u ON b.created_by = u.id
+      ${whereClause}
+      ORDER BY b.display_order ASC, b.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `, queryParams);
+
+    // Get total count for pagination
+    const countResult = await pool.query(`
+      SELECT COUNT(*) as total FROM banners ${whereClause}
+    `, queryParams.slice(0, -2));
+
+    res.json({
+      data: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching admin banners:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch banners' });
+  }
+});
+
+// Create new banner
+app.post('/api/admin/banners', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const {
+      title,
+      subtitle,
+      description,
+      image_url,
+      button_text,
+      button_link,
+      display_order,
+      is_active,
+      background_color,
+      text_color
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !image_url) {
+      return res.status(400).json({ error: 'Title and image URL are required' });
+    }
+
+    // If no display_order provided, set it to be last
+    let finalDisplayOrder = display_order;
+    if (finalDisplayOrder === undefined || finalDisplayOrder === null) {
+      const maxOrderResult = await pool.query('SELECT COALESCE(MAX(display_order), 0) + 1 as next_order FROM banners');
+      finalDisplayOrder = maxOrderResult.rows[0].next_order;
+    }
+
+    const result = await pool.query(`
+      INSERT INTO banners (
+        title, subtitle, description, image_url, button_text, button_link,
+        display_order, is_active, background_color, text_color, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING *
+    `, [
+      title,
+      subtitle || null,
+      description || null,
+      image_url,
+      button_text || null,
+      button_link || null,
+      finalDisplayOrder,
+      is_active !== false, // Default to true if not specified
+      background_color || '#ffffff',
+      text_color || '#000000',
+      req.user.id
+    ]);
+
+    res.json({
+      data: result.rows[0],
+      message: 'Banner created successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error creating banner:', error);
+    res.status(500).json({ error: 'Failed to create banner' });
+  }
+});
+
+// Update banner
+app.put('/api/admin/banners/:id', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+    const {
+      title,
+      subtitle,
+      description,
+      image_url,
+      button_text,
+      button_link,
+      display_order,
+      is_active,
+      background_color,
+      text_color
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !image_url) {
+      return res.status(400).json({ error: 'Title and image URL are required' });
+    }
+
+    const result = await pool.query(`
+      UPDATE banners SET 
+        title = $1,
+        subtitle = $2,
+        description = $3,
+        image_url = $4,
+        button_text = $5,
+        button_link = $6,
+        display_order = $7,
+        is_active = $8,
+        background_color = $9,
+        text_color = $10,
+        updated_at = NOW()
+      WHERE id = $11
+      RETURNING *
+    `, [
+      title,
+      subtitle || null,
+      description || null,
+      image_url,
+      button_text || null,
+      button_link || null,
+      display_order || 0,
+      is_active !== false,
+      background_color || '#ffffff',
+      text_color || '#000000',
+      id
+    ]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Banner not found' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: 'Banner updated successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating banner:', error);
+    res.status(500).json({ error: 'Failed to update banner' });
+  }
+});
+
+// Delete banner
+app.delete('/api/admin/banners/:id', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+
+    const result = await pool.query('DELETE FROM banners WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Banner not found' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: 'Banner deleted successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error deleting banner:', error);
+    res.status(500).json({ error: 'Failed to delete banner' });
+  }
+});
+
+// Update banner status (activate/deactivate)
+app.patch('/api/admin/banners/:id/status', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+    const { is_active } = req.body;
+
+    if (typeof is_active !== 'boolean') {
+      return res.status(400).json({ error: 'is_active must be a boolean value' });
+    }
+
+    const result = await pool.query(`
+      UPDATE banners SET 
+        is_active = $1,
+        updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `, [is_active, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Banner not found' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: `Banner ${is_active ? 'activated' : 'deactivated'} successfully`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating banner status:', error);
+    res.status(500).json({ error: 'Failed to update banner status' });
+  }
+});
+
+// Reorder banners
+app.patch('/api/admin/banners/reorder', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { banners } = req.body; // Array of {id, display_order}
+
+    if (!Array.isArray(banners)) {
+      return res.status(400).json({ error: 'Banners must be an array of {id, display_order} objects' });
+    }
+
+    // Update each banner's display order
+    const updatePromises = banners.map(banner => {
+      return pool.query(
+        'UPDATE banners SET display_order = $1, updated_at = NOW() WHERE id = $2',
+        [banner.display_order, banner.id]
+      );
+    });
+
+    await Promise.all(updatePromises);
+
+    // Return updated banners in new order
+    const result = await pool.query(`
+      SELECT * FROM banners 
+      ORDER BY display_order ASC, created_at DESC
+    `);
+
+    res.json({
+      data: result.rows,
+      message: 'Banner order updated successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error reordering banners:', error);
+    res.status(500).json({ error: 'Failed to reorder banners' });
+  }
+});
+
+// Upload banner image
+app.post('/api/admin/banners/upload-image', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file uploaded' });
+    }
+
+    // Return the relative path that can be used in the frontend
+    const imagePath = `/uploads/products/${req.file.filename}`;
+    
+    console.log('Banner image uploaded successfully:', {
+      originalName: req.file.originalname,
+      filename: req.file.filename,
+      path: imagePath,
+      size: req.file.size
+    });
+
+    res.json({
+      success: true,
+      image_url: imagePath,
+      filename: req.file.filename,
+      message: 'Banner image uploaded successfully'
+    });
+  } catch (error) {
+    console.error('Banner image upload error:', error);
+    res.status(500).json({ error: 'Failed to upload banner image' });
+  }
+});
+
+// Get banner statistics for admin dashboard
+app.get('/api/admin/banners/stats', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) as total_banners,
+        COUNT(CASE WHEN is_active = true THEN 1 END) as active_banners,
+        COUNT(CASE WHEN is_active = false THEN 1 END) as inactive_banners,
+        COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as recent_banners
+      FROM banners
+    `);
+
+    res.json({
+      data: result.rows[0],
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching banner stats:', error);
+    res.status(500).json({ data: null, error: 'Failed to fetch banner statistics' });
+  }
+});
+
+// =============================================
 // TESTIMONIALS ROUTES
 // =============================================
 
