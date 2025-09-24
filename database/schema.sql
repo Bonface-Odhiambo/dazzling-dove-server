@@ -225,3 +225,100 @@ ALTER TABLE IF EXISTS user_sessions
     ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id
     ON user_sessions(user_id);
+
+-- Testimonials table for customer reviews
+CREATE TABLE IF NOT EXISTS testimonials
+(
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL,
+    product_id uuid,
+    title character varying(200) COLLATE pg_catalog."default" NOT NULL,
+    message text COLLATE pg_catalog."default" NOT NULL,
+    rating integer NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    status character varying(20) COLLATE pg_catalog."default" DEFAULT 'pending'::character varying,
+    is_verified_purchase boolean DEFAULT false,
+    is_featured boolean DEFAULT false,
+    admin_notes text COLLATE pg_catalog."default",
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    approved_at timestamp with time zone,
+    approved_by uuid,
+    CONSTRAINT testimonials_pkey PRIMARY KEY (id),
+    CONSTRAINT testimonials_rating_check CHECK (rating >= 1 AND rating <= 5),
+    CONSTRAINT testimonials_status_check CHECK (status IN ('pending', 'approved', 'rejected'))
+);
+
+-- Add foreign key constraints for testimonials
+ALTER TABLE IF EXISTS testimonials
+    ADD CONSTRAINT testimonials_user_id_fkey FOREIGN KEY (user_id)
+    REFERENCES users (id) MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS testimonials
+    ADD CONSTRAINT testimonials_product_id_fkey FOREIGN KEY (product_id)
+    REFERENCES products (id) MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE IF EXISTS testimonials
+    ADD CONSTRAINT testimonials_approved_by_fkey FOREIGN KEY (approved_by)
+    REFERENCES users (id) MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE SET NULL;
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_testimonials_user_id
+    ON testimonials(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_testimonials_product_id
+    ON testimonials(product_id);
+
+CREATE INDEX IF NOT EXISTS idx_testimonials_status
+    ON testimonials(status);
+
+CREATE INDEX IF NOT EXISTS idx_testimonials_rating
+    ON testimonials(rating);
+
+CREATE INDEX IF NOT EXISTS idx_testimonials_created_at
+    ON testimonials(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_testimonials_is_featured
+    ON testimonials(is_featured);
+
+-- Hero Banners/Carousel table for homepage management
+CREATE TABLE IF NOT EXISTS banners
+(
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    title character varying(200) COLLATE pg_catalog."default" NOT NULL,
+    subtitle character varying(300) COLLATE pg_catalog."default",
+    description text COLLATE pg_catalog."default",
+    image_url character varying(500) COLLATE pg_catalog."default" NOT NULL,
+    button_text character varying(100) COLLATE pg_catalog."default",
+    button_link character varying(500) COLLATE pg_catalog."default",
+    display_order integer DEFAULT 0,
+    is_active boolean DEFAULT true,
+    background_color character varying(7) COLLATE pg_catalog."default" DEFAULT '#ffffff',
+    text_color character varying(7) COLLATE pg_catalog."default" DEFAULT '#000000',
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    created_by uuid,
+    CONSTRAINT banners_pkey PRIMARY KEY (id)
+);
+
+-- Add foreign key constraint for banner creator
+ALTER TABLE IF EXISTS banners
+    ADD CONSTRAINT banners_created_by_fkey FOREIGN KEY (created_by)
+    REFERENCES users (id) MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE SET NULL;
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_banners_is_active
+    ON banners(is_active);
+
+CREATE INDEX IF NOT EXISTS idx_banners_display_order
+    ON banners(display_order);
+
+CREATE INDEX IF NOT EXISTS idx_banners_created_at
+    ON banners(created_at);

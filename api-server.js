@@ -1463,6 +1463,649 @@ app.put('/api/admin/users/:userId/role', authenticateToken, async (req, res) => 
   }
 });
 
+// =============================================
+// TESTIMONIALS ROUTES
+// =============================================
+
+// Get all approved testimonials (public endpoint)
+app.get('/api/testimonials', async (req, res) => {
+  try {
+    const { product_id, rating, limit = 50, offset = 0, featured_only = false } = req.query;
+    
+    let whereClause = "WHERE t.status = 'approved'";
+    let queryParams = [];
+    let paramIndex = 1;
+
+    // Filter by product if specified
+    if (product_id) {
+      whereClause += ` AND t.product_id = $${paramIndex}`;
+      queryParams.push(product_id);
+      paramIndex++;
+    }
+
+    // Filter by rating if specified
+    if (rating) {
+      whereClause += ` AND t.rating = $${paramIndex}`;
+      queryParams.push(parseInt(rating));
+      paramIndex++;
+    }
+
+    // Filter featured only if specified
+    if (featured_only === 'true') {
+      whereClause += ` AND t.is_featured = true`;
+    }
+
+    // Add limit and offset
+    queryParams.push(parseInt(limit));
+    queryParams.push(parseInt(offset));
+
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.message,
+        t.rating,
+        t.is_verified_purchase,
+        t.is_featured,
+        t.created_at,
+        t.product_id,
+        CONCAT(u.first_name, ' ', u.last_name) as customer_name,
+        u.first_name,
+        p.name as product_name,
+        p.image as product_image
+      FROM testimonials t
+      JOIN users u ON t.user_id = u.id
+      LEFT JOIN products p ON t.product_id = p.id
+      ${whereClause}
+      ORDER BY t.is_featured DESC, t.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `, queryParams);
+
+    // Get total count for pagination
+    const countResult = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM testimonials t
+      JOIN users u ON t.user_id = u.id
+      LEFT JOIN products p ON t.product_id = p.id
+      ${whereClause}
+    `, queryParams.slice(0, -2));
+
+    res.json({
+      data: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching testimonials:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch testimonials' });
+  }
+});
+
+// Get testimonials for a specific product
+app.get('/api/products/:productId/testimonials', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { limit = 20, offset = 0 } = req.query;
+
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.message,
+        t.rating,
+        t.is_verified_purchase,
+        t.is_featured,
+        t.created_at,
+        CONCAT(u.first_name, ' ', u.last_name) as customer_name,
+        u.first_name
+      FROM testimonials t
+      JOIN users u ON t.user_id = u.id
+      WHERE t.product_id = $1 AND t.status = 'approved'
+      ORDER BY t.is_featured DESC, t.created_at DESC
+      LIMIT $2 OFFSET $3
+    `, [productId, parseInt(limit), parseInt(offset)]);
+
+    // Get rating statistics for this product
+    const statsResult = await pool.query(`
+      SELECT 
+        AVG(rating)::numeric(3,2) as average_rating,
+        COUNT(*) as total_reviews,
+        COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
+        COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
+        COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
+        COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
+        COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star
+      FROM testimonials 
+      WHERE product_id = $1 AND status = 'approved'
+    `, [productId]);
+
+    res.json({
+      data: result.rows,
+      stats: statsResult.rows[0],
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching product testimonials:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch product testimonials' });
+  }
+});
+
+// Submit a new testimonial (authenticated users only)
+app.post('/api/testimonials', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { title, message, rating, product_id } = req.body;
+
+    // Validate required fields
+    if (!title || !message || !rating) {
+      return res.status(400).json({ error: 'Title, message, and rating are required' });
+    }
+
+    // Validate rating range
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    // Check if user has already reviewed this product (if product_id is provided)
+    if (product_id) {
+      const existingReview = await pool.query(
+        'SELECT id FROM testimonials WHERE user_id = $1 AND product_id = $2',
+        [userId, product_id]
+      );
+
+      if (existingReview.rows.length > 0) {
+        return res.status(400).json({ error: 'You have already reviewed this product' });
+      }
+
+      // Check if user has purchased this product (for verified purchase badge)
+      const purchaseCheck = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        WHERE o.user_id = $1 AND oi.product_id = $2 AND o.status IN ('delivered', 'completed')
+      `, [userId, product_id]);
+
+      const isVerifiedPurchase = parseInt(purchaseCheck.rows[0].count) > 0;
+
+      // Insert testimonial
+      const result = await pool.query(`
+        INSERT INTO testimonials (user_id, product_id, title, message, rating, is_verified_purchase)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *
+      `, [userId, product_id, title, message, rating, isVerifiedPurchase]);
+
+      res.json({
+        data: result.rows[0],
+        message: 'Testimonial submitted successfully and is pending approval',
+        error: null
+      });
+    } else {
+      // General testimonial (not product-specific)
+      const result = await pool.query(`
+        INSERT INTO testimonials (user_id, title, message, rating)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+      `, [userId, title, message, rating]);
+
+      res.json({
+        data: result.rows[0],
+        message: 'Testimonial submitted successfully and is pending approval',
+        error: null
+      });
+    }
+  } catch (error) {
+    console.error('Error submitting testimonial:', error);
+    res.status(500).json({ error: 'Failed to submit testimonial' });
+  }
+});
+
+// Get user's own testimonials
+app.get('/api/user/testimonials', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await pool.query(`
+      SELECT 
+        t.*,
+        p.name as product_name,
+        p.image as product_image
+      FROM testimonials t
+      LEFT JOIN products p ON t.product_id = p.id
+      WHERE t.user_id = $1
+      ORDER BY t.created_at DESC
+    `, [userId]);
+
+    res.json({
+      data: result.rows,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching user testimonials:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch your testimonials' });
+  }
+});
+
+// Update user's own testimonial (only if pending)
+app.put('/api/user/testimonials/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const { title, message, rating } = req.body;
+
+    // Check if testimonial exists and belongs to user
+    const checkResult = await pool.query(
+      'SELECT status FROM testimonials WHERE id = $1 AND user_id = $2',
+      [id, userId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Testimonial not found' });
+    }
+
+    if (checkResult.rows[0].status !== 'pending') {
+      return res.status(400).json({ error: 'Can only edit pending testimonials' });
+    }
+
+    // Validate rating if provided
+    if (rating && (rating < 1 || rating > 5)) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    const result = await pool.query(`
+      UPDATE testimonials 
+      SET title = COALESCE($1, title),
+          message = COALESCE($2, message),
+          rating = COALESCE($3, rating),
+          updated_at = NOW()
+      WHERE id = $4 AND user_id = $5
+      RETURNING *
+    `, [title, message, rating, id, userId]);
+
+    res.json({
+      data: result.rows[0],
+      message: 'Testimonial updated successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating testimonial:', error);
+    res.status(500).json({ error: 'Failed to update testimonial' });
+  }
+});
+
+// Delete user's own testimonial (only if pending)
+app.delete('/api/user/testimonials/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    // Check if testimonial exists and belongs to user
+    const checkResult = await pool.query(
+      'SELECT status FROM testimonials WHERE id = $1 AND user_id = $2',
+      [id, userId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Testimonial not found' });
+    }
+
+    if (checkResult.rows[0].status !== 'pending') {
+      return res.status(400).json({ error: 'Can only delete pending testimonials' });
+    }
+
+    await pool.query('DELETE FROM testimonials WHERE id = $1 AND user_id = $2', [id, userId]);
+
+    res.json({
+      message: 'Testimonial deleted successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error deleting testimonial:', error);
+    res.status(500).json({ error: 'Failed to delete testimonial' });
+  }
+});
+
+// Get testimonial statistics (public endpoint)
+app.get('/api/testimonials/stats', async (req, res) => {
+  try {
+    const { product_id } = req.query;
+
+    let whereClause = "WHERE status = 'approved'";
+    let queryParams = [];
+
+    if (product_id) {
+      whereClause += " AND product_id = $1";
+      queryParams.push(product_id);
+    }
+
+    const result = await pool.query(`
+      SELECT 
+        AVG(rating)::numeric(3,2) as average_rating,
+        COUNT(*) as total_reviews,
+        COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
+        COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
+        COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
+        COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
+        COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star,
+        COUNT(CASE WHEN is_verified_purchase = true THEN 1 END) as verified_purchases
+      FROM testimonials 
+      ${whereClause}
+    `, queryParams);
+
+    res.json({
+      data: result.rows[0],
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching testimonial stats:', error);
+    res.status(500).json({ data: null, error: 'Failed to fetch testimonial statistics' });
+  }
+});
+
+// =============================================
+// ADMIN TESTIMONIALS ROUTES
+// =============================================
+
+// Get all testimonials for admin management
+app.get('/api/admin/testimonials', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { status, rating, product_id, search, limit = 50, offset = 0 } = req.query;
+
+    let whereClause = '';
+    let queryParams = [];
+    let paramIndex = 1;
+
+    // Filter by status
+    if (status && status !== 'all') {
+      whereClause += ` WHERE t.status = $${paramIndex}`;
+      queryParams.push(status);
+      paramIndex++;
+    }
+
+    // Filter by rating
+    if (rating) {
+      const condition = whereClause ? ' AND' : ' WHERE';
+      whereClause += `${condition} t.rating = $${paramIndex}`;
+      queryParams.push(parseInt(rating));
+      paramIndex++;
+    }
+
+    // Filter by product
+    if (product_id) {
+      const condition = whereClause ? ' AND' : ' WHERE';
+      whereClause += `${condition} t.product_id = $${paramIndex}`;
+      queryParams.push(product_id);
+      paramIndex++;
+    }
+
+    // Search functionality
+    if (search) {
+      const condition = whereClause ? ' AND' : ' WHERE';
+      whereClause += `${condition} (
+        t.title ILIKE $${paramIndex} OR 
+        t.message ILIKE $${paramIndex} OR
+        CONCAT(u.first_name, ' ', u.last_name) ILIKE $${paramIndex} OR
+        p.name ILIKE $${paramIndex}
+      )`;
+      queryParams.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    // Add limit and offset
+    queryParams.push(parseInt(limit));
+    queryParams.push(parseInt(offset));
+
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.message,
+        t.rating,
+        t.status,
+        t.is_verified_purchase,
+        t.is_featured,
+        t.admin_notes,
+        t.created_at,
+        t.updated_at,
+        t.approved_at,
+        CONCAT(u.first_name, ' ', u.last_name) as customer_name,
+        u.email as customer_email,
+        t.product_id,
+        p.name as product_name,
+        p.image as product_image,
+        approver.first_name as approved_by_name
+      FROM testimonials t
+      JOIN users u ON t.user_id = u.id
+      LEFT JOIN products p ON t.product_id = p.id
+      LEFT JOIN users approver ON t.approved_by = approver.id
+      ${whereClause}
+      ORDER BY 
+        CASE t.status 
+          WHEN 'pending' THEN 1 
+          WHEN 'approved' THEN 2 
+          WHEN 'rejected' THEN 3 
+        END,
+        t.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `, queryParams);
+
+    // Get total count
+    const countResult = await pool.query(`
+      SELECT COUNT(*) as total
+      FROM testimonials t
+      JOIN users u ON t.user_id = u.id
+      LEFT JOIN products p ON t.product_id = p.id
+      ${whereClause}
+    `, queryParams.slice(0, -2));
+
+    res.json({
+      data: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching admin testimonials:', error);
+    res.status(500).json({ data: [], error: 'Failed to fetch testimonials' });
+  }
+});
+
+// Update testimonial status (approve/reject)
+app.patch('/api/admin/testimonials/:id/status', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+    const { status, admin_notes } = req.body;
+    const adminId = req.user.id;
+
+    // Validate status
+    if (!['approved', 'rejected', 'pending'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be approved, rejected, or pending' });
+    }
+
+    let updateFields = 'status = $1, updated_at = NOW()';
+    let queryParams = [status, id];
+    let paramIndex = 3;
+
+    // Add admin notes if provided
+    if (admin_notes !== undefined) {
+      updateFields += `, admin_notes = $${paramIndex}`;
+      queryParams.splice(-1, 0, admin_notes);
+      paramIndex++;
+    }
+
+    // Set approval timestamp and admin if approving
+    if (status === 'approved') {
+      updateFields += `, approved_at = NOW(), approved_by = $${paramIndex}`;
+      queryParams.splice(-1, 0, adminId);
+    } else if (status === 'rejected' || status === 'pending') {
+      updateFields += ', approved_at = NULL, approved_by = NULL';
+    }
+
+    const result = await pool.query(`
+      UPDATE testimonials 
+      SET ${updateFields}
+      WHERE id = $${queryParams.length}
+      RETURNING *
+    `, queryParams);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Testimonial not found' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: `Testimonial ${status} successfully`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating testimonial status:', error);
+    res.status(500).json({ error: 'Failed to update testimonial status' });
+  }
+});
+
+// Toggle featured status
+app.patch('/api/admin/testimonials/:id/featured', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+    const { is_featured } = req.body;
+
+    const result = await pool.query(`
+      UPDATE testimonials 
+      SET is_featured = $1, updated_at = NOW()
+      WHERE id = $2 AND status = 'approved'
+      RETURNING *
+    `, [is_featured, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Testimonial not found or not approved' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: `Testimonial ${is_featured ? 'featured' : 'unfeatured'} successfully`,
+      error: null
+    });
+  } catch (error) {
+    console.error('Error updating featured status:', error);
+    res.status(500).json({ error: 'Failed to update featured status' });
+  }
+});
+
+// Delete testimonial (admin only)
+app.delete('/api/admin/testimonials/:id', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const { id } = req.params;
+
+    const result = await pool.query('DELETE FROM testimonials WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Testimonial not found' });
+    }
+
+    res.json({
+      data: result.rows[0],
+      message: 'Testimonial deleted successfully',
+      error: null
+    });
+  } catch (error) {
+    console.error('Error deleting testimonial:', error);
+    res.status(500).json({ error: 'Failed to delete testimonial' });
+  }
+});
+
+// Get admin testimonial dashboard stats
+app.get('/api/admin/testimonials/dashboard', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    // Get overall statistics
+    const overallStats = await pool.query(`
+      SELECT 
+        COUNT(*) as total_testimonials,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
+        COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected_count,
+        COUNT(CASE WHEN is_featured = true THEN 1 END) as featured_count,
+        AVG(rating)::numeric(3,2) as average_rating,
+        COUNT(CASE WHEN is_verified_purchase = true THEN 1 END) as verified_purchases
+      FROM testimonials
+    `);
+
+    // Get recent testimonials (last 30 days)
+    const recentStats = await pool.query(`
+      SELECT 
+        COUNT(*) as recent_total,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as recent_pending
+      FROM testimonials 
+      WHERE created_at >= NOW() - INTERVAL '30 days'
+    `);
+
+    // Get rating distribution
+    const ratingDistribution = await pool.query(`
+      SELECT 
+        rating,
+        COUNT(*) as count
+      FROM testimonials 
+      WHERE status = 'approved'
+      GROUP BY rating
+      ORDER BY rating DESC
+    `);
+
+    // Get top products by testimonial count
+    const topProducts = await pool.query(`
+      SELECT 
+        p.id,
+        p.name,
+        COUNT(t.id) as testimonial_count,
+        AVG(t.rating)::numeric(3,2) as average_rating
+      FROM products p
+      LEFT JOIN testimonials t ON p.id = t.product_id AND t.status = 'approved'
+      GROUP BY p.id, p.name
+      HAVING COUNT(t.id) > 0
+      ORDER BY testimonial_count DESC, average_rating DESC
+      LIMIT 10
+    `);
+
+    res.json({
+      data: {
+        overall: overallStats.rows[0],
+        recent: recentStats.rows[0],
+        rating_distribution: ratingDistribution.rows,
+        top_products: topProducts.rows
+      },
+      error: null
+    });
+  } catch (error) {
+    console.error('Error fetching testimonial dashboard:', error);
+    res.status(500).json({ data: null, error: 'Failed to fetch dashboard statistics' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API server running on http://localhost:${PORT}`);
 });
