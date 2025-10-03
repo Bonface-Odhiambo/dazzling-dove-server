@@ -1062,12 +1062,12 @@ app.post('/api/stripe/confirm-payment', authenticateToken, async (req, res) => {
       `INSERT INTO orders (
         user_id, total_amount, subtotal, payment_intent_id, shipping_address, status,
         shipping_first_name, shipping_last_name, shipping_phone, shipping_address_line_1,
-        shipping_city, shipping_state, shipping_postal_code, shipping_country,
+        shipping_address_line_2, shipping_city, shipping_state, shipping_postal_code, shipping_country,
         billing_first_name, billing_last_name, billing_phone, billing_address_line_1,
-        billing_city, billing_state, billing_postal_code, billing_country,
+        billing_address_line_2, billing_city, billing_state, billing_postal_code, billing_country,
         created_at
        )
-       VALUES ($1, $2, $3, $4, $5, 'processing', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW()) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, 'processing', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW()) RETURNING *`,
       [
         userId,
         orderTotal,
@@ -1079,18 +1079,20 @@ app.post('/api/stripe/confirm-payment', authenticateToken, async (req, res) => {
         shippingAddress.last_name,
         shippingAddress.phone,
         shippingAddress.address,
-        shippingAddress.region || 'N/A',
-        shippingAddress.county || 'N/A',
-        '00000', // Default postal code
+        shippingAddress.additional_info || null, // shipping_address_line_2
+        shippingAddress.region || null, // shipping_city
+        shippingAddress.county || null, // shipping_state
+        null, // shipping_postal_code (not available in user_addresses)
         shippingAddress.country,
         // Billing address fields (using shipping address as billing for now)
         shippingAddress.first_name,
         shippingAddress.last_name,
         shippingAddress.phone,
         shippingAddress.address,
-        shippingAddress.region || 'N/A',
-        shippingAddress.county || 'N/A',
-        '00000', // Default postal code
+        shippingAddress.additional_info || null, // billing_address_line_2
+        shippingAddress.region || null, // billing_city
+        shippingAddress.county || null, // billing_state
+        null, // billing_postal_code (not available in user_addresses)
         shippingAddress.country
       ]
     );
