@@ -4,7 +4,7 @@
 
 import fetch from 'node-fetch';
 
-const API_BASE = 'http://localhost:3000'; // Adjust port if different
+const API_BASE = 'http://localhost:5174'; // Adjust port if different
 let authToken = '';
 let adminToken = '';
 let testUserId = '';
